@@ -158,6 +158,17 @@ export default function App() {
       .catch(err => console.error("Failed to load prompt", err));
   }, []);
 
+  const categorizeByKeywords = (requirements: string): string => {
+    const req = requirements.toLowerCase();
+    if (req.includes('vending machine') || req.includes('coffee machine')) return 'Vending Machine';
+    if (req.includes('premix') || req.includes('powder')) return 'Premix';
+    if (req.includes('jaggery') || req.includes('gur')) return 'Jaggery';
+    if (req.includes('lemon tea')) return 'Lemon Tea';
+    if (req.includes('ice tea') || req.includes('iced tea')) return 'Ice Tea';
+    if (req.includes('green tea')) return 'Green Tea';
+    return 'Other';
+  };
+
   const handleProcessEmail = async () => {
     setIsProcessing(true);
     try {
@@ -169,9 +180,12 @@ export default function App() {
       
       const data = await response.json();
       
+      const categoryFromKeywords = categorizeByKeywords(data.requirements || '');
+
       const newInquiry: Inquiry = {
         id: Math.random().toString(36).substring(7),
         ...data,
+        category: categoryFromKeywords !== 'Other' ? categoryFromKeywords : (data.category || 'Other'),
         status: 'new',
         receivedAt: new Date().toLocaleTimeString()
       };
@@ -879,6 +893,31 @@ export default function App() {
                          >
                            {CRM_STAGES.map(s => <option key={s} value={s}>{s.toUpperCase()}</option>)}
                          </select>
+                       </div>
+
+                       <div className="flex flex-col gap-2 p-3 bg-gradient-to-r from-[#D4FF00]/30 to-[#FF90E8]/30 border-2 border-[#1A1A1A] rounded-sm transform rotate-1 hover:rotate-0 transition-transform shadow-[4px_4px_0_0_#1A1A1A]">
+                         <label className="text-[12px] font-bold uppercase tracking-widest flex items-center justify-between">
+                           ✨ Lead Category
+                           <span className="text-[9px] bg-black text-white px-2 py-0.5 rounded-full">AI Suggested</span>
+                         </label>
+                         <p className="text-[10px] font-mono opacity-70 leading-tight mb-1">
+                           Auto-assigned based on requirements keywords. You can edit or correct it below.
+                         </p>
+                         <input 
+                           type="text"
+                           list="category-options"
+                           value={selectedInquiry.category}
+                           onChange={(e) => {
+                             const updated = { ...selectedInquiry, category: e.target.value };
+                             setSelectedInquiry(updated);
+                             setInquiries(prev => prev.map(i => i.id === updated.id ? updated : i));
+                           }}
+                           className="border-2 border-[#1A1A1A] p-2 text-sm font-bold focus:outline-none focus:ring-2 focus:ring-[#D4FF00] bg-white text-black shadow-[inset_2px_2px_0_0_rgba(0,0,0,0.05)]"
+                           placeholder="Enter or select category"
+                         />
+                         <datalist id="category-options">
+                           {uniqueCategories.map(cat => <option key={cat} value={cat} />)}
+                         </datalist>
                        </div>
 
                        <div className="flex flex-col gap-2">
