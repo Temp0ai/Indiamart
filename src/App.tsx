@@ -16,6 +16,7 @@ import {
   Calendar,
   Bell,
   Download,
+  Upload,
   Star,
   Briefcase
 } from 'lucide-react';
@@ -69,6 +70,7 @@ export default function App() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [selectedInquiry, setSelectedInquiry] = useState<Inquiry | null>(null);
   const [systemPrompt, setSystemPrompt] = useState<string>('');
+  const [customTone, setCustomTone] = useState<string>(() => localStorage.getItem('ai_custom_tone') || 'Professional, B2B, welcoming');
   
   const [isSavingNotes, setIsSavingNotes] = useState(false);
   const savingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
@@ -76,6 +78,10 @@ export default function App() {
   useEffect(() => {
     localStorage.setItem('crm_inquiries', JSON.stringify(inquiries));
   }, [inquiries]);
+
+  useEffect(() => {
+    localStorage.setItem('ai_custom_tone', customTone);
+  }, [customTone]);
   
   const [whatsappLinked, setWhatsappLinked] = useState(() => localStorage.getItem('whatsappLinked') === 'true');
   const [waPhoneInput, setWaPhoneInput] = useState(() => localStorage.getItem('waPhoneInput') || '');
@@ -152,11 +158,11 @@ export default function App() {
   };
 
   useEffect(() => {
-    fetch('/api/prompt')
+    fetch(`/api/prompt?tone=${encodeURIComponent(customTone)}`)
       .then(res => res.json())
       .then(data => setSystemPrompt(data.prompt))
       .catch(err => console.error("Failed to load prompt", err));
-  }, []);
+  }, [customTone]);
 
   const categorizeByKeywords = (requirements: string): string => {
     const req = requirements.toLowerCase();
@@ -175,7 +181,7 @@ export default function App() {
       const response = await fetch('/api/process-email', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ emailContent: SAMPLE_EMAIL })
+        body: JSON.stringify({ emailContent: SAMPLE_EMAIL, tone: customTone })
       });
       
       const data = await response.json();
@@ -237,18 +243,20 @@ export default function App() {
     });
   }, [inquiries, searchQuery, filterStatus, filterCategory, filterDate]);
 
-  const handleExportCSV = () => {
-    if (filteredInquiries.length === 0) return;
+    const handleExportCSV = () => {
+    if (inquiries.length === 0) return;
     
-    const headers = ['Customer Name', 'Phone Number', 'Email', 'Requirements', 'Category', 'Status', 'Received At'];
-    const rows = filteredInquiries.map(inquiry => [
-      `"${inquiry.customerName.replace(/"/g, '""')}"`,
-      `"${inquiry.phoneNumber.replace(/"/g, '""')}"`,
-      `"${inquiry.email.replace(/"/g, '""')}"`,
-      `"${inquiry.requirements.replace(/"/g, '""')}"`,
-      `"${inquiry.category.replace(/"/g, '""')}"`,
-      `"${inquiry.status.replace(/"/g, '""')}"`,
-      `"${inquiry.receivedAt.replace(/"/g, '""')}"`
+    const headers = ['id', 'Customer Name', 'Phone Number', 'Email', 'Requirements', 'Category', 'Status', 'Received At', 'Deal Value'];
+    const rows = inquiries.map(inquiry => [
+      `"${(inquiry.id || '').replace(/"/g, '""')}"`,
+      `"${(inquiry.customerName || '').replace(/"/g, '""')}"`,
+      `"${(inquiry.phoneNumber || '').replace(/"/g, '""')}"`,
+      `"${(inquiry.email || '').replace(/"/g, '""')}"`,
+      `"${(inquiry.requirements || '').replace(/"/g, '""')}"`,
+      `"${(inquiry.category || '').replace(/"/g, '""')}"`,
+      `"${(inquiry.status || 'new').replace(/"/g, '""')}"`,
+      `"${(inquiry.receivedAt || '').replace(/"/g, '""')}"`,
+      `"${(inquiry.dealValue || '').toString().replace(/"/g, '""')}"`
     ]);
     
     const csvContent = [
@@ -260,10 +268,82 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a');
     link.href = url;
-    link.setAttribute('download', 'leads_export.csv');
+    link.setAttribute('download', 'crm_leads_export.csv');
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
+  };
+
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const handleImportCSV = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const text = event.target?.result as string;
+      if (!text) return;
+      
+      const lines = text.split('\n').filter(line => line.trim() !== '');
+      if (lines.length <= 1) return;
+
+      const headersLine = lines[0].split(',').map(h => h.replace(/^"|"$/g, '').trim());
+      
+      const fields = ['id', 'Customer Name', 'Phone Number', 'Email', 'Requirements', 'Category', 'Status', 'Received At', 'Deal Value'];
+      const indices = {};
+      fields.forEach(field => {
+        indices[field] = headersLine.findIndex(h => h.toLowerCase() === field.toLowerCase());
+      });
+
+      const importedInquiries = [];
+      
+      for (let i = 1; i < lines.length; i++) {
+        const regex = /(?:^|,)(?:"([^"]*(?:""[^"]*)*)"|([^",]*))/g;
+        let match;
+        const row = [];
+        while ((match = regex.exec(lines[i])) !== null) {
+          if (match[0] === '' && match.index === regex.lastIndex) {
+              regex.lastIndex++; 
+          }
+          let val = match[1] !== undefined ? match[1].replace(/""/g, '"') : match[2];
+          row.push(val);
+        }
+
+        const id = indices['id'] >= 0 ? row[indices['id']] : '';
+        const inquiry = { 
+          id: id || Math.random().toString(36).substring(7),
+          customerName: indices['Customer Name'] >= 0 ? row[indices['Customer Name']] : '',
+          phoneNumber: indices['Phone Number'] >= 0 ? row[indices['Phone Number']] : '',
+          email: indices['Email'] >= 0 ? row[indices['Email']] : '',
+          requirements: indices['Requirements'] >= 0 ? row[indices['Requirements']] : '',
+          category: indices['Category'] >= 0 ? row[indices['Category']] : '',
+          status: indices['Status'] >= 0 ? row[indices['Status']] : 'new',
+          receivedAt: indices['Received At'] >= 0 ? row[indices['Received At']] : new Date().toLocaleTimeString(),
+          dealValue: indices['Deal Value'] >= 0 ? row[indices['Deal Value']] : '',
+        };
+
+        if (!['new', 'contacted', 'qualified', 'proposal', 'won', 'lost'].includes(inquiry.status)) {
+          inquiry.status = 'new';
+        }
+        
+        importedInquiries.push(inquiry);
+      }
+      
+      setInquiries(prev => {
+        const prevMap = new Map(prev.map(p => [p.id, p]));
+        importedInquiries.forEach(imp => {
+           if (imp.id && prevMap.has(imp.id)) {
+              prevMap.set(imp.id, { ...prevMap.get(imp.id), ...imp });
+           } else {
+              prevMap.set(imp.id || Math.random().toString(36).substring(7), imp);
+           }
+        });
+        return Array.from(prevMap.values());
+      });
+    };
+    reader.readAsText(file);
+    e.target.value = '';
   };
 
   const handleRequestReview = async (lead: Inquiry) => {
@@ -287,7 +367,8 @@ export default function App() {
           lead,
           companyName,
           reviewUrl: googleBusinessUrl,
-          customApiKey: geminiApiKey
+          customApiKey: geminiApiKey,
+          tone: customTone
         })
       });
       const data = await res.json();
@@ -800,6 +881,30 @@ export default function App() {
           )}
 
           {activeTab === 'crm' && (
+            <div className="flex flex-col h-full">
+              <div className="flex justify-end mb-4 gap-3">
+                <input 
+                  type="file" 
+                  accept=".csv" 
+                  ref={fileInputRef} 
+                  style={{ display: 'none' }} 
+                  onChange={handleImportCSV} 
+                />
+                <button
+                  onClick={() => fileInputRef.current?.click()}
+                  className="bg-white border border-slate-200 text-slate-700 px-4 py-2 font-medium rounded-lg text-sm hover:bg-slate-50 hover:-translate-y-0.5 transition-all flex items-center gap-2 shadow-sm whitespace-nowrap"
+                >
+                  <Upload className="h-4 w-4" />
+                  Import CSV
+                </button>
+                <button
+                  onClick={handleExportCSV}
+                  className="bg-slate-900 text-white px-4 py-2 font-medium rounded-lg text-sm hover:opacity-90 hover:-translate-y-0.5 transition-all flex items-center gap-2 shadow-sm whitespace-nowrap"
+                >
+                  <Download className="h-4 w-4" />
+                  Export CSV
+                </button>
+              </div>
             <div 
               className="flex flex-col h-full bg-slate-50/50 border border-slate-200 rounded-2xl shadow-sm p-4 md:p-6 pb-2 relative overflow-hidden"
               style={{ backgroundImage: 'none', backgroundSize: '30px 30px' }}
@@ -1037,6 +1142,7 @@ export default function App() {
                  </div>
                )}
             </div>
+          </div>
           )}
 
           {activeTab === 'prompt' && (
@@ -1046,6 +1152,22 @@ export default function App() {
                 <p className="text-xs md:text-sm font-semibold tracking-tight text-slate-500 mt-4 leading-relaxed">
                   Systematic prompt logic dictating AI behavior.<br/>Controls extraction, taxonomy assignment, and tone configuration.
                 </p>
+              </div>
+
+              <div className="mb-8">
+                <h4 className="text-sm font-semibold tracking-wide text-slate-700 mb-3 block">AI Persona / Tone</h4>
+                <div className="flex flex-col md:flex-row gap-4 items-start md:items-center">
+                  <input
+                    type="text"
+                    value={customTone}
+                    onChange={e => setCustomTone(e.target.value)}
+                    placeholder="e.g. Professional, friendly, succinct"
+                    className="flex-1 w-full border border-slate-300 rounded-lg p-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 shadow-sm"
+                  />
+                  <p className="text-xs text-slate-500 flex-1">
+                    Describe the voice and tone the AI should use when generating WhatsApp messages and follow-ups.
+                  </p>
+                </div>
               </div>
 
               <div className="bg-slate-900 text-[#F2F1ED] p-8 relative border border-slate-200 rounded-xl">
@@ -1389,7 +1511,8 @@ export default function App() {
                             customPrompt: bulkPrompt,
                             customApiKey: geminiApiKey,
                             catalogUrl: whatsappCatalogUrl,
-                            reviewUrl: googleBusinessUrl
+                            reviewUrl: googleBusinessUrl,
+                            tone: customTone
                           })
                         });
                         const data = await res.json();
