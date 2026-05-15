@@ -20,12 +20,11 @@ Analyze the incoming Indiamart email text. Extract the following exact fields:
 
 **Step 2: Classification & Segmentation**
 Analyze the "Specific Requirements" and classify the inquiry into ONE of the following strict categories based on closest match:
-- Vending machines
-- Tea/coffee premixes
-- Jaggery products
-- Nescafe premix
-- Bru premix
-- Society-specific premixes
+- Premix
+- Vending Machine
+- Jaggery
+- Ice Tea
+- Lemon Tea
 - Other
 
 **Step 3: AI Follow-Up Generation**
@@ -95,7 +94,7 @@ async function startServer() {
   // API Route to generate bulk message using AI
   app.post('/api/generate-bulk-message', async (req, res) => {
     try {
-      const { leads, customPrompt, companyName, companyProducts, customApiKey } = req.body;
+      const { leads, customPrompt, companyName, companyProducts, customApiKey, catalogUrl, reviewUrl } = req.body;
       
       if (!leads || leads.length === 0) {
         return res.status(400).json({ error: 'Leads are required' });
@@ -119,6 +118,9 @@ ${leads.map((l: any) => `- ${l.customerName} (Interested in: ${l.requirements ||
 
 Custom Prompt: ${customPrompt || 'Create a general promotional update or check-in message.'}
 
+${catalogUrl ? `Crucial: Always include our WhatsApp Catalog link in the message and encourage them to view our products: ${catalogUrl}` : ''}
+${reviewUrl ? `Crucial: If appropriate, politely ask for a review, and if you do, include our Google Business link: ${reviewUrl}` : ''}
+
 Return ONLY the plain text content of the generated message. Do not use markdown blocks like \`\`\`. Use formatting supported by WhatsApp (like *bold* or _italic_). Use placeholders like {{Name}} if you want to make it generic, or write the message in a way that feels personal yet applicable to all.
 `;
 
@@ -134,6 +136,41 @@ Return ONLY the plain text content of the generated message. Do not use markdown
     } catch (error: any) {
       console.error('Error generating bulk message:', error);
       res.status(500).json({ error: error.message || 'Failed to generate bulk message' });
+    }
+  });
+
+  // API Route to generate single review message
+  app.post('/api/generate-review-message', async (req, res) => {
+    try {
+      const { lead, companyName, reviewUrl, customApiKey } = req.body;
+      
+      const aiClient = customApiKey 
+        ? new GoogleGenAI({ apiKey: customApiKey }) 
+        : ai;
+
+      const promptContext = `
+You are an expert customer relations assistant for a B2B company named ${companyName || 'our company'}.
+
+Write a short, polite WhatsApp message thanking the customer (${lead.customerName}) for their inquiry about "${lead.requirements}".
+Keep it warm and professional. At the end of the message, ask them to spare a moment to rate their experience with us.
+Include this EXACT link at the very end of the message: ${reviewUrl}
+Sign off with ${companyName || 'our team'}.
+
+Return ONLY the plain text content of the generated message. Do not use markdown blocks like \`\`\`. Use formatting supported by WhatsApp (like *bold*).
+`;
+
+      const response = await aiClient.models.generateContent({
+        model: 'gemini-2.5-flash',
+        contents: promptContext,
+        config: {
+          temperature: 0.5,
+        }
+      });
+
+      res.json({ message: response.text?.trim() });
+    } catch (error: any) {
+      console.error('Error generating review message:', error);
+      res.status(500).json({ error: error.message || 'Failed to generate review message' });
     }
   });
 

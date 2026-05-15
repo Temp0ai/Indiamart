@@ -14,7 +14,10 @@ import {
   Search,
   Filter,
   Calendar,
-  Bell
+  Bell,
+  Download,
+  Star,
+  Briefcase
 } from 'lucide-react';
 
 interface Inquiry {
@@ -26,10 +29,15 @@ interface Inquiry {
   category: string;
   location: string;
   whatsAppTemplate: string;
-  status: 'new' | 'contacted';
+  status: 'new' | 'contacted' | 'qualified' | 'proposal' | 'won' | 'lost';
   receivedAt: string;
   reminderDate?: string;
+  dealValue?: number;
+  notes?: string;
+  contactHistory?: { date: string, type: string, note: string }[];
 }
+
+const CRM_STAGES = ['new', 'contacted', 'qualified', 'proposal', 'won', 'lost'] as const;
 
 const SAMPLE_EMAIL = `
 From: Indiamart <no-reply@indiamart.com>
@@ -50,7 +58,7 @@ Indiamart
 `;
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState<'inbox' | 'leads' | 'prompt' | 'settings'>('leads');
+  const [activeTab, setActiveTab] = useState<'inbox' | 'leads' | 'crm' | 'prompt' | 'settings'>('leads');
   const [inquiries, setInquiries] = useState<Inquiry[]>([]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [selectedInquiry, setSelectedInquiry] = useState<Inquiry | null>(null);
@@ -70,6 +78,9 @@ export default function App() {
   // AI Assistant Settings
   const [geminiApiKey, setGeminiApiKey] = useState(() => localStorage.getItem('geminiApiKey') || '');
   const [companyName, setCompanyName] = useState(() => localStorage.getItem('companyName') || 'Arihant Enterprises');
+  const [googleBusinessUrl, setGoogleBusinessUrl] = useState(() => localStorage.getItem('googleBusinessUrl') || '');
+  const [whatsappCatalogUrl, setWhatsappCatalogUrl] = useState(() => localStorage.getItem('whatsappCatalogUrl') || '');
+
   const [companyProducts, setCompanyProducts] = useState(() => localStorage.getItem('companyProducts') || 'Mfg / Export tea & coffee premix');
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -82,6 +93,19 @@ export default function App() {
   const [bulkPrompt, setBulkPrompt] = useState('');
   const [bulkMessageResult, setBulkMessageResult] = useState('');
   const [isGeneratingBulk, setIsGeneratingBulk] = useState(false);
+  const [isGeneratingReviewMsg, setIsGeneratingReviewMsg] = useState(false);
+  const [historyFilter, setHistoryFilter] = useState('All');
+
+  const [bulkMode, setBulkMode] = useState<'ai' | 'manual' | 'template'>('ai');
+  const [bulkManualText, setBulkManualText] = useState('');
+  const [bulkSelectedTemplate, setBulkSelectedTemplate] = useState('t1');
+  const [showConfirmBulkDialog, setShowConfirmBulkDialog] = useState(false);
+
+  const BULK_TEMPLATES = [
+    { id: 't1', label: 'Intro & Catalog', content: "Hi {{Name}},\n\nThanks for connecting with us regarding {{Requirements}}. Check out our latest products here:\n{{Catalog}}\n\nLet us know if you need any assistance!\n- {{CompanyName}}" },
+    { id: 't2', label: 'Follow up & Review', content: "Hi {{Name}},\n\nJust checking in if you had any further questions about your inquiry for {{Requirements}}.\n\nIf you have a moment, we'd appreciate a quick review:\n{{Review}}\n\nBest,\n{{CompanyName}}" },
+    { id: 't3', label: 'Promo Offer', content: "Hello {{Name}},\n\nWe have a special 10% discount running this week on {{Requirements}}!\n\nView details: {{Catalog}}\nReply to claim the offer.\n- {{CompanyName}}" }
+  ];
 
   // Persist settings
   useEffect(() => {
@@ -92,8 +116,10 @@ export default function App() {
     localStorage.setItem('syncFolder', syncFolder);
     localStorage.setItem('geminiApiKey', geminiApiKey);
     localStorage.setItem('companyName', companyName);
+    localStorage.setItem('googleBusinessUrl', googleBusinessUrl);
+    localStorage.setItem('whatsappCatalogUrl', whatsappCatalogUrl);
     localStorage.setItem('companyProducts', companyProducts);
-  }, [whatsappLinked, waPhoneInput, gmailLinked, gmailAccount, syncFolder, geminiApiKey, companyName, companyProducts]);
+  }, [whatsappLinked, waPhoneInput, gmailLinked, gmailAccount, syncFolder, geminiApiKey, companyName, companyProducts, googleBusinessUrl, whatsappCatalogUrl]);
 
   const [isSyncingGmail, setIsSyncingGmail] = useState(false);
   const [lastSyncResult, setLastSyncResult] = useState<{count: number, time: string} | null>(null);
@@ -184,6 +210,72 @@ export default function App() {
     });
   }, [inquiries, searchQuery, filterStatus, filterCategory, filterDate]);
 
+  const handleExportCSV = () => {
+    if (filteredInquiries.length === 0) return;
+    
+    const headers = ['Customer Name', 'Phone Number', 'Email', 'Requirements', 'Category', 'Status', 'Received At'];
+    const rows = filteredInquiries.map(inquiry => [
+      `"${inquiry.customerName.replace(/"/g, '""')}"`,
+      `"${inquiry.phoneNumber.replace(/"/g, '""')}"`,
+      `"${inquiry.email.replace(/"/g, '""')}"`,
+      `"${inquiry.requirements.replace(/"/g, '""')}"`,
+      `"${inquiry.category.replace(/"/g, '""')}"`,
+      `"${inquiry.status.replace(/"/g, '""')}"`,
+      `"${inquiry.receivedAt.replace(/"/g, '""')}"`
+    ]);
+    
+    const csvContent = [
+      headers.join(','),
+      ...rows.map(e => e.join(','))
+    ].join('\n');
+    
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.setAttribute('download', 'leads_export.csv');
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  const handleRequestReview = async (lead: Inquiry) => {
+    if (!whatsappLinked) {
+      alert("Please link your WhatsApp account in the settings first.");
+      setActiveTab("settings");
+      return;
+    }
+    if (!googleBusinessUrl) {
+      alert("Please set your Google Business Profile URL in the settings first.");
+      setActiveTab("settings");
+      return;
+    }
+
+    setIsGeneratingReviewMsg(true);
+    try {
+      const res = await fetch('/api/generate-review-message', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          lead,
+          companyName,
+          reviewUrl: googleBusinessUrl,
+          customApiKey: geminiApiKey
+        })
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error);
+      
+      const cleanPhone = lead.phoneNumber.replace(/[^0-9]/g, '');
+      window.open(`https://wa.me/${cleanPhone}?text=${encodeURIComponent(data.message)}`, '_blank');
+      
+    } catch (err: any) {
+      alert(err.message || "Failed to generate review message.");
+    } finally {
+      setIsGeneratingReviewMsg(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-[#F2F1ED] text-[#1A1A1A] flex flex-col md:flex-row font-sans border-4 md:border-[12px] border-[#1A1A1A] selection:bg-[#D4FF00] selection:text-black">
       {/* Sidebar */}
@@ -211,6 +303,14 @@ export default function App() {
                 {inquiries.length}
               </span>
             )}
+          </button>
+          
+          <button 
+            onClick={() => setActiveTab('crm')}
+            className={`flex-none md:w-full flex items-center gap-2 md:gap-3 p-3 md:p-4 border-2 transition-all cursor-pointer ${activeTab === 'crm' ? 'border-[#1A1A1A] bg-[#D4FF00] font-bold text-black' : 'border-transparent hover:border-[#1A1A1A] hover:bg-black hover:text-white'}`}
+          >
+            <Briefcase className="h-4 w-4" />
+            <span className="font-mono text-xs uppercase whitespace-nowrap">CRM View</span>
           </button>
           
           <button 
@@ -251,12 +351,14 @@ export default function App() {
           <span className="text-[8px] md:text-[10px] font-bold uppercase tracking-widest opacity-50 mb-1 md:mb-2">
             {activeTab === 'inbox' && 'Synchronization Engine'}
             {activeTab === 'leads' && 'Queue Intelligence'}
+            {activeTab === 'crm' && 'Relationship Details'}
             {activeTab === 'prompt' && 'AI Configuration View'}
             {activeTab === 'settings' && 'System Integrations'}
           </span>
           <h2 className="text-4xl md:text-6xl font-bold tracking-tight leading-none italic" style={{ fontFamily: "'Georgia', serif" }}>
             {activeTab === 'inbox' && 'Process Inquiries'}
             {activeTab === 'leads' && 'Pipeline Management'}
+            {activeTab === 'crm' && 'CRM Workspace'}
             {activeTab === 'prompt' && 'Prompt Instructions'}
             {activeTab === 'settings' && 'Integrations'}
           </h2>
@@ -469,116 +571,27 @@ export default function App() {
                       {selectedLeadsIds.size} Selected
                     </span>
                   </div>
-                  <button
-                    onClick={() => setShowBulkAction(true)}
-                    disabled={selectedLeadsIds.size === 0}
-                    className="bg-[#25D366] text-black px-4 py-2 font-bold uppercase tracking-widest text-[10px] hover:invert disabled:opacity-50 disabled:hover:invert-0 flex items-center gap-2"
-                  >
-                    <MessageSquare className="h-3 w-3" />
-                    Bulk WhatsApp
-                  </button>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={handleExportCSV}
+                      className="bg-[#1A1A1A] text-white px-4 py-2 font-bold uppercase tracking-widest text-[10px] hover:invert flex items-center gap-2"
+                    >
+                      <Download className="h-3 w-3" />
+                      Export Leads
+                    </button>
+                    <button
+                      onClick={() => setShowBulkAction(true)}
+                      disabled={selectedLeadsIds.size === 0}
+                      className="bg-[#25D366] text-black px-4 py-2 font-bold uppercase tracking-widest text-[10px] hover:invert disabled:opacity-50 disabled:hover:invert-0 flex items-center gap-2"
+                    >
+                      <MessageSquare className="h-3 w-3" />
+                      Bulk WhatsApp
+                    </button>
+                  </div>
                 </div>
               )}
 
-              {showBulkAction && (
-                <div className="bg-[#D4FF00] border-2 border-[#1A1A1A] p-6 shrink-0 relative">
-                  <button onClick={() => setShowBulkAction(false)} className="absolute top-4 right-4 text-xs font-bold uppercase hover:underline">Close</button>
-                  <h4 className="text-xl font-bold italic mb-4" style={{ fontFamily: "'Georgia', serif" }}>Bulk WhatsApp AI Assistant</h4>
-                  <p className="text-xs font-mono opacity-80 mb-4">Drafting message for {selectedLeadsIds.size} leads as <b>{companyName}</b>.</p>
-                  
-                  <textarea 
-                    value={bulkPrompt}
-                    onChange={e => setBulkPrompt(e.target.value)}
-                    placeholder="Enter context or specific instructions (e.g. 'Announce our new premium Assam tea premix with 10% off for bulk orders...')"
-                    className="w-full h-24 p-3 border-2 border-[#1A1A1A] text-sm font-mono mb-4 resize-none focus:outline-none focus:ring-2 focus:ring-black"
-                  ></textarea>
 
-                  <button 
-                    onClick={async () => {
-                      setIsGeneratingBulk(true);
-                      setBulkMessageResult('');
-                      try {
-                        const targetLeads = inquiries.filter(i => selectedLeadsIds.has(i.id));
-                        const res = await fetch('/api/generate-bulk-message', {
-                          method: 'POST',
-                          headers: { 'Content-Type': 'application/json' },
-                          body: JSON.stringify({
-                            leads: targetLeads,
-                            companyName,
-                            companyProducts,
-                            customPrompt: bulkPrompt,
-                            customApiKey: geminiApiKey
-                          })
-                        });
-                        const data = await res.json();
-                        if (!res.ok) throw new Error(data.error);
-                        setBulkMessageResult(data.message);
-                      } catch (err: any) {
-                        alert(err.message);
-                      }
-                      setIsGeneratingBulk(false);
-                    }}
-                    disabled={isGeneratingBulk}
-                    className="bg-black text-white px-6 py-3 font-bold uppercase tracking-widest text-xs hover:invert disabled:opacity-50"
-                  >
-                    {isGeneratingBulk ? 'Generating...' : 'Generate AI Broadcast'}
-                  </button>
-
-                  {bulkMessageResult && (
-                    <div className="mt-6 border-2 border-[#1A1A1A] bg-white p-4">
-                      <div className="text-[10px] font-bold uppercase tracking-widest border-b-2 border-[#1A1A1A] pb-2 mb-3 bg-white">
-                        Generated Template
-                      </div>
-                      <div className="font-sans text-sm whitespace-pre-wrap leading-relaxed">
-                        {bulkMessageResult}
-                      </div>
-                      <div className="mt-4 flex gap-3">
-                         <button 
-                           onClick={() => {
-                             navigator.clipboard.writeText(bulkMessageResult);
-                             alert("Copied to clipboard!");
-                           }}
-                           className="bg-black text-white px-4 py-2 text-[10px] font-bold uppercase tracking-widest hover:invert"
-                         >
-                           Copy to Clipboard
-                         </button>
-                         <button 
-                           onClick={() => {
-                             if (!whatsappLinked) {
-                               alert("Please link your WhatsApp account in the settings first.");
-                               setActiveTab("settings");
-                               return;
-                             }
-                             const confirmSend = window.confirm(`This will attempt to open WhatsApp for ${selectedLeadsIds.size} selected leads one by one.\n\nNote: Browsers typically block multiple popups. You may need to click 'Allow popups for this site' and try again.\n\nProceed?`);
-                             if (confirmSend) {
-                               let delay = 0;
-                               const targetLeads = inquiries.filter(i => selectedLeadsIds.has(i.id));
-                               
-                               // To avoid aggressive popup blocking, we'll process them in sequence
-                               targetLeads.forEach((lead, index) => {
-                                 setTimeout(() => {
-                                   let finalMessage = bulkMessageResult.replace(/{{[Nn]ame}}/g, lead.customerName);
-                                   const cleanPhone = lead.phoneNumber.replace(/[^0-9]/g, '');
-                                   window.open(`https://wa.me/${cleanPhone}?text=${encodeURIComponent(finalMessage)}`, '_blank');
-                                   
-                                   // If it's the last one, show a completion note
-                                   if (index === targetLeads.length - 1) {
-                                     setTimeout(() => alert(`Sent requests for ${targetLeads.length} leads. Please check your new tabs/windows.`), 1000);
-                                   }
-                                 }, delay);
-                                 delay += 500; // 500ms delay between opens
-                               });
-                             }
-                           }}
-                           className="bg-[#25D366] text-black border-2 border-[#1A1A1A] px-4 py-2 text-[10px] font-bold uppercase tracking-widest hover:invert"
-                         >
-                           Send via WhatsApp ({selectedLeadsIds.size})
-                         </button>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              )}
 
               {inquiries.length === 0 ? (
                 <div className="flex-1 flex flex-col items-center justify-center p-20 bg-white border-4 border-dashed border-[#1A1A1A]">
@@ -683,6 +696,17 @@ export default function App() {
                            </div>
                            
                            <button 
+                            onClick={() => {
+                              const cleanPhone = selectedInquiry.phoneNumber.replace(/[^0-9+]/g, '');
+                              window.location.href = `tel:${cleanPhone}`;
+                            }}
+                            className="w-full bg-[#1A1A1A] text-[#D4FF00] border-2 border-[#1A1A1A] py-4 md:py-5 text-sm md:text-base font-bold uppercase tracking-widest flex items-center justify-center gap-3 hover:bg-[#D4FF00] hover:text-[#1A1A1A] transition-all mt-4"
+                           >
+                             <Phone className="h-5 w-5" />
+                             Dial / Call Lead
+                           </button>
+                           
+                           <button 
                             onClick={async () => {
                               if (!whatsappLinked) {
                                 alert("Please link your WhatsApp number in the Settings tab first.");
@@ -700,6 +724,15 @@ export default function App() {
                            >
                              <MessageSquare className="h-5 w-5" />
                              Execute WhatsApp Lead
+                           </button>
+
+                           <button 
+                            onClick={() => handleRequestReview(selectedInquiry)}
+                            disabled={isGeneratingReviewMsg}
+                            className="w-full bg-[#fdf0ef] text-[#EA4335] border-2 border-[#EA4335] py-4 md:py-5 text-sm md:text-base font-bold uppercase tracking-widest flex items-center justify-center gap-3 hover:bg-[#EA4335] hover:text-white transition-all mt-4 disabled:opacity-50"
+                           >
+                             {isGeneratingReviewMsg ? <Loader2 className="h-5 w-5 animate-spin" /> : <Star className="h-5 w-5" />}
+                             {isGeneratingReviewMsg ? 'Generating...' : 'Request Review via WhatsApp'}
                            </button>
 
                            <div className="mt-4 pt-6 border-t-2 border-dashed border-[#1A1A1A] flex flex-col gap-2">
@@ -734,6 +767,195 @@ export default function App() {
                   </div>
                 </div>
               )}
+            </div>
+          )}
+
+          {activeTab === 'crm' && (
+            <div className="flex flex-col h-full bg-white border-2 border-[#1A1A1A] md:shadow-[8px_8px_0_0_#1A1A1A] p-2 md:p-6 pb-2 relative">
+               <div className="flex h-full overflow-x-auto gap-4 md:gap-6 no-scrollbar snap-x">
+                 {CRM_STAGES.map(stage => {
+                   const stageLeads = inquiries.filter(i => (i.status === stage));
+                   
+                   return (
+                     <div key={stage} className="min-w-[280px] w-[280px] md:min-w-[320px] md:w-[320px] flex flex-col snap-start shrink-0">
+                       <h3 className="text-xs font-bold uppercase tracking-widest border-b-2 border-black pb-3 mb-2 flex items-center justify-between group">
+                         <span className={
+                           stage === 'won' ? 'text-[#25D366]' : 
+                           stage === 'lost' ? 'text-[#EA4335]' : 
+                           stage === 'new' ? 'text-[#D4FF00] bg-black px-1' : 'text-black'
+                         }>
+                           {stage}
+                         </span>
+                         <div className="flex items-center gap-2">
+                            {stageLeads.length > 0 && (
+                               <button 
+                                 onClick={() => {
+                                   const newSet = new Set<any>();
+                                   stageLeads.forEach(l => newSet.add(l.id));
+                                   setSelectedLeadsIds(newSet);
+                                   setShowBulkAction(true);
+                                 }}
+                                 className="opacity-0 group-hover:opacity-100 transition-opacity bg-[#25D366] text-black px-2 py-0.5 text-[8px] uppercase tracking-widest font-bold hover:invert flex items-center gap-1 cursor-pointer"
+                                 title="Send bulk WhatsApp message to this stage"
+                               >
+                                 Bulk Msg
+                               </button>
+                            )}
+                            <span className="text-[10px] font-mono opacity-50">{stageLeads.length} leads</span>
+                         </div>
+                       </h3>
+                       <div className="w-full bg-[#F2F1ED] h-1.5 mb-4 border border-[#1A1A1A]">
+                         <div 
+                           className={`h-full ${stage === 'won' ? 'bg-[#25D366]' : stage === 'lost' ? 'bg-[#EA4335]' : stage === 'new' ? 'bg-[#D4FF00]' : 'bg-[#1A1A1A]'}`}
+                           style={{ width: `${inquiries.length > 0 ? (stageLeads.length / inquiries.length) * 100 : 0}%` }}
+                         />
+                       </div>
+                       <div className="flex-1 overflow-y-auto no-scrollbar flex flex-col gap-3 pb-4">
+                         {stageLeads.map(lead => (
+                           <div 
+                             key={lead.id} 
+                             onClick={() => setSelectedInquiry(lead)}
+                             className="border-2 border-[#1A1A1A] p-4 bg-[#F9F9F9] hover:bg-[#D4FF00] transition-colors cursor-pointer flex flex-col gap-2 group shadow-[3px_3px_0_0_#1A1A1A] hover:shadow-[1px_1px_0_0_#1A1A1A] hover:translate-x-[2px] hover:translate-y-[2px]"
+                           >
+                             <div className="flex justify-between items-start">
+                               <span className="font-bold text-sm" style={{ fontFamily: "'Georgia', serif" }}>{lead.customerName}</span>
+                               <span className="text-[10px] uppercase font-mono">{lead.dealValue ? `$${lead.dealValue}` : '-'}</span>
+                             </div>
+                             <span className="text-xs opacity-70 line-clamp-1">{lead.requirements}</span>
+                             {lead.reminderDate && (
+                               <div className="text-[10px] uppercase font-bold tracking-widest text-[#EA4335] mt-1">
+                                 Reminder: {new Date(lead.reminderDate).toLocaleDateString()}
+                               </div>
+                             )}
+                           </div>
+                         ))}
+                       </div>
+                     </div>
+                   );
+                 })}
+               </div>
+
+               {/* Right side detail overlay */}
+               {selectedInquiry && (
+                 <div className="absolute top-0 right-0 h-full w-full md:w-[450px] bg-white border-l-2 border-[#1A1A1A] shadow-[-8px_0_0_0_rgba(0,0,0,0.1)] flex flex-col z-10 transition-transform">
+                    <div className="p-4 border-b-2 border-[#1A1A1A] flex justify-between items-center bg-[#D4FF00]">
+                      <h2 className="font-bold tracking-widest uppercase text-xs">Lead Details</h2>
+                      <button onClick={() => setSelectedInquiry(null)} className="font-bold uppercase text-[10px] hover:underline">Close</button>
+                    </div>
+                    
+                    <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-white">
+                       <div>
+                         <h3 className="text-2xl font-bold italic mb-1" style={{ fontFamily: "'Georgia', serif" }}>{selectedInquiry.customerName}</h3>
+                         <span className="text-xs font-mono uppercase opacity-70">{selectedInquiry.phoneNumber} • {selectedInquiry.email}</span>
+                       </div>
+
+                       <div className="flex flex-col gap-2">
+                         <label className="text-[10px] font-bold uppercase tracking-widest">Stage</label>
+                         <select 
+                           value={selectedInquiry.status}
+                           onChange={(e) => {
+                             const updated = { ...selectedInquiry, status: e.target.value as any };
+                             setSelectedInquiry(updated);
+                             setInquiries(prev => prev.map(i => i.id === updated.id ? updated : i));
+                           }}
+                           className="border-2 border-[#1A1A1A] p-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#D4FF00] bg-white"
+                         >
+                           {CRM_STAGES.map(s => <option key={s} value={s}>{s.toUpperCase()}</option>)}
+                         </select>
+                       </div>
+
+                       <div className="flex flex-col gap-2">
+                         <label className="text-[10px] font-bold uppercase tracking-widest">Deal Value ($)</label>
+                         <input 
+                           type="number"
+                           value={selectedInquiry.dealValue || ''}
+                           onChange={(e) => {
+                             const updated = { ...selectedInquiry, dealValue: parseFloat(e.target.value) || 0 };
+                             setSelectedInquiry(updated);
+                             setInquiries(prev => prev.map(i => i.id === updated.id ? updated : i));
+                           }}
+                           className="border-2 border-[#1A1A1A] p-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#D4FF00]"
+                         />
+                       </div>
+
+                       <div className="flex flex-col gap-2">
+                         <label className="text-[10px] font-bold uppercase tracking-widest">Requirements</label>
+                         <p className="border-2 border-dashed border-[#1A1A1A] p-3 text-sm opacity-80 bg-[#F9F9F9]">
+                           {selectedInquiry.requirements}
+                         </p>
+                       </div>
+
+                       <div className="flex flex-col gap-2">
+                         <label className="text-[10px] font-bold uppercase tracking-widest">Lead Notes</label>
+                         <textarea 
+                           className="border-2 border-[#1A1A1A] p-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#D4FF00] h-24 resize-none"
+                           placeholder="Jot down details, next steps, context..."
+                           value={selectedInquiry.notes || ''}
+                           onChange={(e) => {
+                             const updated = { ...selectedInquiry, notes: e.target.value };
+                             setSelectedInquiry(updated);
+                             setInquiries(prev => prev.map(i => i.id === updated.id ? updated : i));
+                           }}
+                         />
+                       </div>
+
+                       <div className="flex flex-col gap-2">
+                         <div className="flex justify-between items-center bg-[#1A1A1A] text-white px-3 py-1">
+                           <span className="text-[10px] font-bold uppercase tracking-widest">Contact History</span>
+                           <div className="flex items-center gap-3">
+                             <select 
+                               className="bg-transparent text-[#D4FF00] text-[10px] uppercase font-bold focus:outline-none cursor-pointer"
+                               value={historyFilter}
+                               onChange={(e) => setHistoryFilter(e.target.value)}
+                             >
+                               <option value="All" className="bg-[#1A1A1A]">All</option>
+                               <option value="Note" className="bg-[#1A1A1A]">Notes</option>
+                               <option value="Call" className="bg-[#1A1A1A]">Calls</option>
+                               <option value="Email" className="bg-[#1A1A1A]">Emails</option>
+                               <option value="WhatsApp" className="bg-[#1A1A1A]">WhatsApp</option>
+                             </select>
+                             <button 
+                               className="text-[10px] font-bold uppercase hover:text-[#D4FF00]"
+                               onClick={() => {
+                                 const type = prompt("Type (Note/Call/Email/WhatsApp):", "Note") || "Note";
+                                 const note = prompt("Add history note:");
+                                 if (note) {
+                                    const updatedHistory = [...(selectedInquiry.contactHistory || []), {
+                                      date: new Date().toLocaleString(),
+                                      type,
+                                      note
+                                    }];
+                                    const updated = { ...selectedInquiry, contactHistory: updatedHistory };
+                                    setSelectedInquiry(updated);
+                                    setInquiries(prev => prev.map(i => i.id === updated.id ? updated : i));
+                                 }
+                               }}
+                             >
+                               + Add Log
+                             </button>
+                           </div>
+                         </div>
+                         <div className="flex flex-col gap-2 mt-2">
+                           {(!selectedInquiry.contactHistory || selectedInquiry.contactHistory.length === 0) ? (
+                             <span className="text-xs italic opacity-50">No history logged yet.</span>
+                           ) : (
+                             selectedInquiry.contactHistory
+                               .filter(log => historyFilter === 'All' || log.type.trim().toLowerCase() === historyFilter.toLowerCase())
+                               .map((log, idx) => (
+                               <div key={idx} className="border border-[#1A1A1A] p-2 text-xs flex flex-col gap-1 bg-[#F9F9F9]">
+                                 <div className="flex justify-between items-center border-b border-dashed border-[#1A1A1A] pb-1">
+                                   <span className="font-bold uppercase text-[10px]">{log.type}</span>
+                                   <span className="font-mono text-[10px] opacity-70">{log.date}</span>
+                                 </div>
+                                 <span className="mt-1">{log.note}</span>
+                               </div>
+                             ))
+                           )}
+                         </div>
+                       </div>
+                    </div>
+                 </div>
+               )}
             </div>
           )}
 
@@ -813,6 +1035,28 @@ export default function App() {
                       value={companyProducts}
                       onChange={(e) => setCompanyProducts(e.target.value)}
                     />
+                  </div>
+                  <div className="flex flex-col gap-1 mt-2 border-t-2 border-dashed border-[#1A1A1A] pt-4">
+                    <label className="text-[10px] font-bold uppercase tracking-widest opacity-70">Google Business Profile URL</label>
+                    <input 
+                      type="url" 
+                      placeholder="https://g.page/r/..." 
+                      className="w-full border-2 border-[#1A1A1A] px-4 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-[#D4FF00]"
+                      value={googleBusinessUrl}
+                      onChange={(e) => setGoogleBusinessUrl(e.target.value)}
+                    />
+                    <span className="text-[10px] opacity-50 mt-1">Used to request ratings and reviews from customers.</span>
+                  </div>
+                  <div className="flex flex-col gap-1 mt-2 border-t-2 border-dashed border-[#1A1A1A] pt-4">
+                    <label className="text-[10px] font-bold uppercase tracking-widest opacity-70">WhatsApp Catalog URL</label>
+                    <input 
+                      type="url" 
+                      placeholder="https://wa.me/c/..." 
+                      className="w-full border-2 border-[#1A1A1A] px-4 py-2 font-mono text-sm focus:outline-none focus:ring-2 focus:ring-[#D4FF00]"
+                      value={whatsappCatalogUrl}
+                      onChange={(e) => setWhatsappCatalogUrl(e.target.value)}
+                    />
+                    <span className="text-[10px] opacity-50 mt-1">Include your product catalog link in bulk messages.</span>
                   </div>
                   <div className="flex flex-col gap-1 mt-2 border-t-2 border-dashed border-[#1A1A1A] pt-4">
                     <label className="text-[10px] font-bold uppercase tracking-widest opacity-70">Gemini API Key (Optional)</label>
@@ -964,6 +1208,233 @@ export default function App() {
           )}
         </div>
       </main>
+
+      {showBulkAction && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm">
+          <div className="bg-white border-[8px] border-[#1A1A1A] w-full max-w-2xl flex flex-col shadow-[16px_16px_0_0_#D4FF00] overflow-hidden max-h-full">
+            <div className="bg-[#1A1A1A] p-4 flex justify-between items-center text-[#D4FF00]">
+              <h4 className="font-bold uppercase tracking-widest text-sm flex items-center gap-2">
+                <MessageSquare className="h-4 w-4" />
+                Bulk WhatsApp Broadcast
+              </h4>
+              <button onClick={() => setShowBulkAction(false)} className="hover:text-white uppercase text-[10px] tracking-widest font-bold">Close</button>
+            </div>
+            
+            <div className="p-6 overflow-y-auto flex-1">
+              <div className="mb-6 border-l-4 border-[#1A1A1A] pl-4">
+                <p className="font-mono text-xs opacity-70">Target Audience:</p>
+                <p className="font-bold text-lg">{selectedLeadsIds.size} Selected Leads</p>
+              </div>
+
+              <div className="flex bg-[#F2F1ED] p-1 border-2 border-[#1A1A1A] mb-6">
+                <button 
+                  onClick={() => setBulkMode('ai')}
+                  className={`flex-1 py-2 text-xs font-bold uppercase tracking-widest transition-colors ${bulkMode === 'ai' ? 'bg-black text-[#D4FF00]' : 'hover:bg-white text-black'}`}
+                >AI Generated</button>
+                <button 
+                  onClick={() => {
+                    setBulkMode('template');
+                    if (!bulkMessageResult) {
+                      setBulkMessageResult(BULK_TEMPLATES.find(t => t.id === bulkSelectedTemplate)?.content || '');
+                    }
+                  }}
+                  className={`flex-1 py-2 text-xs font-bold uppercase tracking-widest transition-colors ${bulkMode === 'template' ? 'bg-black text-[#D4FF00]' : 'hover:bg-white text-black'}`}
+                >Pre-defined</button>
+                <button 
+                  onClick={() => {
+                    setBulkMode('manual');
+                    setBulkMessageResult(bulkManualText);
+                  }}
+                  className={`flex-1 py-2 text-xs font-bold uppercase tracking-widest transition-colors ${bulkMode === 'manual' ? 'bg-black text-[#D4FF00]' : 'hover:bg-white text-black'}`}
+                >Manual Text</button>
+              </div>
+
+              {bulkMode === 'template' && (
+                <div className="flex flex-col gap-4">
+                  <label className="text-[10px] font-bold uppercase tracking-widest">Select Template</label>
+                  <select 
+                    value={bulkSelectedTemplate}
+                    onChange={(e) => {
+                      setBulkSelectedTemplate(e.target.value);
+                      const tpl = BULK_TEMPLATES.find(t => t.id === e.target.value);
+                      if (tpl) setBulkMessageResult(tpl.content);
+                    }}
+                    className="border-2 border-[#1A1A1A] p-3 text-sm font-mono focus:outline-none focus:ring-2 focus:ring-[#D4FF00] bg-white appearance-none cursor-pointer"
+                  >
+                    {BULK_TEMPLATES.map(t => <option key={t.id} value={t.id}>{t.label}</option>)}
+                  </select>
+                  <div className="border-2 border-dashed border-[#1A1A1A] p-4 bg-[#F9F9F9] text-sm whitespace-pre-wrap font-mono mt-2">
+                    {BULK_TEMPLATES.find(t => t.id === bulkSelectedTemplate)?.content || ''}
+                  </div>
+                </div>
+              )}
+
+              {bulkMode === 'manual' && (
+                <div className="flex flex-col gap-4">
+                  <label className="text-[10px] font-bold uppercase tracking-widest">Compose Message</label>
+                  <textarea 
+                    value={bulkManualText}
+                    onChange={e => {
+                      setBulkManualText(e.target.value);
+                      setBulkMessageResult(e.target.value);
+                    }}
+                    placeholder="Type your message here. Use {{Name}} to insert lead's name."
+                    className="w-full h-32 p-3 border-2 border-[#1A1A1A] text-sm font-mono resize-none focus:outline-none focus:ring-2 focus:ring-[#D4FF00]"
+                  />
+                </div>
+              )}
+
+              {bulkMode === 'ai' && (
+                <div className="flex flex-col gap-4">
+                  <label className="text-[10px] font-bold uppercase tracking-widest">AI Instructions</label>
+                  <textarea 
+                    value={bulkPrompt}
+                    onChange={e => setBulkPrompt(e.target.value)}
+                    placeholder="Enter context or specific instructions (e.g. 'Announce our new premium Assam tea premix with 10% off for bulk orders...')"
+                    className="w-full h-24 p-3 border-2 border-[#1A1A1A] text-sm font-mono resize-none focus:outline-none focus:ring-2 focus:ring-[#D4FF00]"
+                  />
+                  <button 
+                    onClick={async () => {
+                      setIsGeneratingBulk(true);
+                      setBulkMessageResult('');
+                      try {
+                        const targetLeads = inquiries.filter(i => selectedLeadsIds.has(i.id));
+                        const res = await fetch('/api/generate-bulk-message', {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({
+                            leads: targetLeads,
+                            companyName,
+                            companyProducts,
+                            customPrompt: bulkPrompt,
+                            customApiKey: geminiApiKey,
+                            catalogUrl: whatsappCatalogUrl,
+                            reviewUrl: googleBusinessUrl
+                          })
+                        });
+                        const data = await res.json();
+                        if (!res.ok) throw new Error(data.error);
+                        setBulkMessageResult(data.message);
+                      } catch (err: any) {
+                        alert(err.message);
+                      }
+                      setIsGeneratingBulk(false);
+                    }}
+                    disabled={isGeneratingBulk}
+                    className="bg-black text-white px-6 py-3 font-bold uppercase tracking-widest text-xs hover:invert disabled:opacity-50"
+                  >
+                    {isGeneratingBulk ? 'Generating...' : 'Generate AI Broadcast'}
+                  </button>
+                  {bulkMessageResult && (
+                    <div className="mt-4 border-2 border-[#1A1A1A] bg-white p-4">
+                      <div className="text-[10px] font-bold uppercase tracking-widest border-b-2 border-[#1A1A1A] pb-2 mb-3 bg-white">
+                        Generated Template
+                      </div>
+                      <div className="font-sans text-sm whitespace-pre-wrap leading-relaxed">
+                        {bulkMessageResult}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+
+            <div className="border-t-2 border-[#1A1A1A] p-4 bg-[#F9F9F9] flex justify-end gap-4 shrink-0">
+               <button 
+                 onClick={() => setShowBulkAction(false)}
+                 className="px-6 py-3 font-bold uppercase tracking-widest text-xs hover:underline"
+               >
+                 Cancel
+               </button>
+               <button 
+                 onClick={() => {
+                   if (!whatsappLinked) {
+                     alert("Please link your WhatsApp account in the settings first.");
+                     setActiveTab("settings");
+                     setShowBulkAction(false);
+                     return;
+                   }
+                   let initialMessage = bulkMessageResult;
+                   if (bulkMode === 'template' && !initialMessage) {
+                     initialMessage = BULK_TEMPLATES.find(t => t.id === bulkSelectedTemplate)?.content || '';
+                   } else if (bulkMode === 'manual' && !initialMessage) {
+                     initialMessage = bulkManualText;
+                   }
+                   
+                   if (!initialMessage.trim()) {
+                     alert("Please provide a message to send.");
+                     return;
+                   }
+                   
+                   setBulkMessageResult(initialMessage);
+                   setShowConfirmBulkDialog(true);
+                 }}
+                 disabled={isGeneratingBulk || selectedLeadsIds.size === 0}
+                 className="bg-[#25D366] text-black border-2 border-[#1A1A1A] px-6 py-3 font-bold uppercase tracking-widest text-xs hover:bg-[#1A1A1A] hover:text-[#25D366] disabled:opacity-50 transition-colors"
+               >
+                 Review & Send &rarr;
+               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {showConfirmBulkDialog && (
+         <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/80 backdrop-blur-md">
+            <div className="bg-[#D4FF00] border-4 border-[#1A1A1A] p-8 max-w-lg w-full flex flex-col shadow-[8px_8px_0_0_#1A1A1A]">
+               <h3 className="text-2xl font-bold uppercase tracking-tighter mb-2">Ready to broadcast?</h3>
+               <p className="text-sm border-b-2 border-[#1A1A1A] pb-4 mb-4">
+                 You are about to send messages to <b>{selectedLeadsIds.size}</b> leads.
+                 This process will open a new WhatsApp Web tab for each lead sequentially.
+                 Browsers typically block multiple popups, so please click <strong>'Allow popups for this site'</strong> when prompted.
+               </p>
+               
+               <div className="bg-black text-white p-4 mb-4 border border-[#1A1A1A] text-xs font-mono max-h-40 overflow-y-auto whitespace-pre-wrap">
+                 {bulkMessageResult}
+               </div>
+
+               <div className="flex gap-4 mt-4">
+                 <button 
+                   onClick={() => setShowConfirmBulkDialog(false)}
+                   className="flex-1 border-2 border-[#1A1A1A] bg-white py-3 font-bold uppercase text-xs hover:invert"
+                 >
+                   Cancel
+                 </button>
+                 <button 
+                   onClick={() => {
+                     setShowConfirmBulkDialog(false);
+                     setShowBulkAction(false);
+                     
+                     let delay = 0;
+                     const targetLeads = inquiries.filter(i => selectedLeadsIds.has(i.id));
+                     
+                     targetLeads.forEach((lead, index) => {
+                       setTimeout(() => {
+                         let finalMessage = bulkMessageResult
+                             .replace(/{{[Nn]ame}}/g, lead.customerName)
+                             .replace(/{{[Rr]equirements}}/g, lead.requirements)
+                             .replace(/{{[Cc]atalog}}/g, whatsappCatalogUrl || 'our catalog')
+                             .replace(/{{[Rr]eview}}/g, googleBusinessUrl || 'our page')
+                             .replace(/{{[Cc]ompanyName}}/g, companyName || 'us');
+                         
+                         const cleanPhone = lead.phoneNumber.replace(/[^0-9]/g, '');
+                         window.open(`https://wa.me/${cleanPhone}?text=${encodeURIComponent(finalMessage)}`, '_blank');
+                         
+                         if (index === targetLeads.length - 1) {
+                           setTimeout(() => alert(`Sent requests for ${targetLeads.length} leads. Please check your new tabs/windows.`), 1000);
+                         }
+                       }, delay);
+                       delay += 800;
+                     });
+                   }}
+                   className="flex-1 border-2 border-[#1A1A1A] bg-black text-[#D4FF00] py-3 font-bold uppercase text-xs hover:bg-[#1A1A1A]"
+                 >
+                   Confirm & Send
+                 </button>
+               </div>
+            </div>
+         </div>
+      )}
     </div>
   );
 }
