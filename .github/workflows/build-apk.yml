@@ -29,12 +29,17 @@ jobs:
       run: npm install @capacitor/cli
 
     - name: Sync Capacitor
-      run: npx cap sync android
+      run: |
+        if [ ! -d "android" ]; then
+          npx cap add android
+        else
+          npx cap sync android
+        fi
 
     - name: Set up JDK
       uses: actions/setup-java@v4
       with:
-        java-version: '17'
+        java-version: '21'
         distribution: 'temurin'
         cache: gradle
 
@@ -42,7 +47,7 @@ jobs:
       run: |
         cd android
         chmod +x gradlew
-        ./gradlew assembleDebug
+        ./gradlew assembleDebug --stacktrace --info
 
     - name: Upload APK artifact
       uses: actions/upload-artifact@v4
