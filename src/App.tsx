@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { 
   Inbox, 
   MessageSquare, 
@@ -59,10 +59,23 @@ Indiamart
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<'inbox' | 'leads' | 'crm' | 'prompt' | 'settings'>('leads');
-  const [inquiries, setInquiries] = useState<Inquiry[]>([]);
+  const [inquiries, setInquiries] = useState<Inquiry[]>(() => {
+    try {
+      const saved = localStorage.getItem('crm_inquiries');
+      if (saved) return JSON.parse(saved);
+    } catch (e) {}
+    return [];
+  });
   const [isProcessing, setIsProcessing] = useState(false);
   const [selectedInquiry, setSelectedInquiry] = useState<Inquiry | null>(null);
   const [systemPrompt, setSystemPrompt] = useState<string>('');
+  
+  const [isSavingNotes, setIsSavingNotes] = useState(false);
+  const savingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    localStorage.setItem('crm_inquiries', JSON.stringify(inquiries));
+  }, [inquiries]);
   
   const [whatsappLinked, setWhatsappLinked] = useState(() => localStorage.getItem('whatsappLinked') === 'true');
   const [waPhoneInput, setWaPhoneInput] = useState(() => localStorage.getItem('waPhoneInput') || '');
@@ -780,9 +793,13 @@ export default function App() {
                      <div key={stage} className="min-w-[280px] w-[280px] md:min-w-[320px] md:w-[320px] flex flex-col snap-start shrink-0">
                        <h3 className="text-xs font-bold uppercase tracking-widest border-b-2 border-black pb-3 mb-2 flex items-center justify-between group">
                          <span className={
-                           stage === 'won' ? 'text-[#25D366]' : 
-                           stage === 'lost' ? 'text-[#EA4335]' : 
-                           stage === 'new' ? 'text-[#D4FF00] bg-black px-1' : 'text-black'
+                           stage === 'won' ? 'bg-[#25D366] text-black px-1' : 
+                           stage === 'lost' ? 'bg-[#FF6B6B] text-black px-1' : 
+                           stage === 'new' ? 'bg-[#D4FF00] text-black px-1' : 
+                           stage === 'contacted' ? 'bg-[#FF90E8] text-black px-1' : 
+                           stage === 'qualified' ? 'bg-[#00E5FF] text-black px-1' : 
+                           stage === 'proposal' ? 'bg-[#FFC900] text-black px-1' : 
+                           'text-black'
                          }>
                            {stage}
                          </span>
@@ -795,7 +812,7 @@ export default function App() {
                                    setSelectedLeadsIds(newSet);
                                    setShowBulkAction(true);
                                  }}
-                                 className="opacity-0 group-hover:opacity-100 transition-opacity bg-[#25D366] text-black px-2 py-0.5 text-[8px] uppercase tracking-widest font-bold hover:invert flex items-center gap-1 cursor-pointer"
+                                 className="opacity-0 group-hover:opacity-100 transition-opacity bg-black text-white px-2 py-0.5 text-[8px] uppercase tracking-widest font-bold hover:invert flex items-center gap-1 cursor-pointer"
                                  title="Send bulk WhatsApp message to this stage"
                                >
                                  Bulk Msg
@@ -804,18 +821,18 @@ export default function App() {
                             <span className="text-[10px] font-mono opacity-50">{stageLeads.length} leads</span>
                          </div>
                        </h3>
-                       <div className="w-full bg-[#F2F1ED] h-1.5 mb-4 border border-[#1A1A1A]">
+                       <div className="w-full bg-[#F2F1ED] h-1.5 mb-2 border border-[#1A1A1A]">
                          <div 
-                           className={`h-full ${stage === 'won' ? 'bg-[#25D366]' : stage === 'lost' ? 'bg-[#EA4335]' : stage === 'new' ? 'bg-[#D4FF00]' : 'bg-[#1A1A1A]'}`}
+                           className={`h-full ${stage === 'won' ? 'bg-[#25D366]' : stage === 'lost' ? 'bg-[#FF6B6B]' : stage === 'new' ? 'bg-[#D4FF00]' : stage === 'contacted' ? 'bg-[#FF90E8]' : stage === 'qualified' ? 'bg-[#00E5FF]' : stage === 'proposal' ? 'bg-[#FFC900]' : 'bg-[#1A1A1A]'}`}
                            style={{ width: `${inquiries.length > 0 ? (stageLeads.length / inquiries.length) * 100 : 0}%` }}
                          />
                        </div>
-                       <div className="flex-1 overflow-y-auto no-scrollbar flex flex-col gap-3 pb-4">
+                       <div className={`flex-1 overflow-y-auto no-scrollbar flex flex-col gap-3 pb-4 p-2 -mx-2 bg-gradient-to-b ${stage === 'won' ? 'from-[#25D366]/20' : stage === 'lost' ? 'from-[#FF6B6B]/20' : stage === 'new' ? 'from-[#D4FF00]/20' : stage === 'contacted' ? 'from-[#FF90E8]/20' : stage === 'qualified' ? 'from-[#00E5FF]/20' : stage === 'proposal' ? 'from-[#FFC900]/20' : 'from-transparent'} to-transparent`}>
                          {stageLeads.map(lead => (
                            <div 
                              key={lead.id} 
                              onClick={() => setSelectedInquiry(lead)}
-                             className="border-2 border-[#1A1A1A] p-4 bg-[#F9F9F9] hover:bg-[#D4FF00] transition-colors cursor-pointer flex flex-col gap-2 group shadow-[3px_3px_0_0_#1A1A1A] hover:shadow-[1px_1px_0_0_#1A1A1A] hover:translate-x-[2px] hover:translate-y-[2px]"
+                             className={`border-2 border-[#1A1A1A] p-4 transition-all cursor-pointer flex flex-col gap-2 group shadow-[3px_3px_0_0_#1A1A1A] hover:shadow-[1px_1px_0_0_#1A1A1A] hover:translate-x-[2px] hover:translate-y-[2px] ${stage === 'won' ? 'bg-[#25D366] hover:brightness-95' : stage === 'lost' ? 'bg-[#FF6B6B] hover:brightness-95' : stage === 'new' ? 'bg-[#D4FF00] hover:brightness-95' : stage === 'contacted' ? 'bg-[#FF90E8] hover:brightness-95' : stage === 'qualified' ? 'bg-[#00E5FF] hover:brightness-95' : stage === 'proposal' ? 'bg-[#FFC900] hover:brightness-95' : 'bg-[#F9F9F9] hover:bg-[#E0E0E0]'}`}
                            >
                              <div className="flex justify-between items-start">
                                <span className="font-bold text-sm" style={{ fontFamily: "'Georgia', serif" }}>{lead.customerName}</span>
@@ -886,15 +903,28 @@ export default function App() {
                        </div>
 
                        <div className="flex flex-col gap-2">
-                         <label className="text-[10px] font-bold uppercase tracking-widest">Lead Notes</label>
+                         <div className="flex justify-between items-end">
+                           <label className="text-[10px] font-bold uppercase tracking-widest">Lead Notes</label>
+                           {isSavingNotes ? (
+                             <span className="text-[10px] font-mono text-gray-500 italic">Saving...</span>
+                           ) : (
+                             <span className="text-[10px] font-mono text-[#25D366] italic transition-opacity">Saved</span>
+                           )}
+                         </div>
                          <textarea 
-                           className="border-2 border-[#1A1A1A] p-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#D4FF00] h-24 resize-none"
+                           className="border-2 border-[#1A1A1A] p-2 text-sm focus:outline-none focus:ring-2 focus:ring-[#D4FF00] h-24 resize-none bg-[#F9F9F9] focus:bg-white transition-colors"
                            placeholder="Jot down details, next steps, context..."
                            value={selectedInquiry.notes || ''}
                            onChange={(e) => {
                              const updated = { ...selectedInquiry, notes: e.target.value };
                              setSelectedInquiry(updated);
                              setInquiries(prev => prev.map(i => i.id === updated.id ? updated : i));
+
+                             setIsSavingNotes(true);
+                             if (savingTimeoutRef.current) clearTimeout(savingTimeoutRef.current);
+                             savingTimeoutRef.current = setTimeout(() => {
+                               setIsSavingNotes(false);
+                             }, 1000);
                            }}
                          />
                        </div>
