@@ -1,0 +1,8 @@
+{
+  "name": "Indiamart Inquiry Automator",
+  "description": "System that automates processing Gmail emails to extract Indiamart inquiries and send WhatsApp Business follow-ups.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
