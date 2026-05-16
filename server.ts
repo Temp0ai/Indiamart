@@ -2,9 +2,14 @@ import express from 'express';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
+import 'dotenv/config';
 
 // Initialize Gemini
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+const apiKey = process.env.GEMINI_API_KEY;
+if (!apiKey) {
+  console.error('⚠️  GEMINI_API_KEY is not set. Set it in .env.local or environment variables.');
+}
+const ai = new GoogleGenAI({ apiKey: apiKey || '' });
 
 const getSystemPrompt = (tone: string = 'Professional, B2B, welcoming') => `
 **System Identity & Objective**
@@ -46,64 +51,78 @@ Output the final extracted data strictly as a JSON object matching this schema:
 Ensure the JSON is ready to be parsed by the webhook sending data to the WhatsApp Business API. Preserve data privacy by not sharing this information outside the designated pipeline.
 `;
 
+// Helper: safely call Gemini and parse JSON
+async function callGeminiJson(prompt: string, config: Record<string, any> = {}) {
+  const response = await ai.models.generateContent({
+    model: 'gemini-2.5-flash',
+    contents: prompt,
+    config,
+  });
+
+  const text = response.text;
+  if (!text) throw new Error('Gemini returned empty response');
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    // Try to extract JSON from markdown code blocks
+    const match = text.match(/```(?:json)?\s*([\s\S]*?)```/);
+    if (match) return JSON.parse(match[1].trim());
+    throw new Error('Failed to parse Gemini output as JSON');
+  }
+}
+
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
 
-  app.use(express.json());
+  app.use(express.json({ limit: '1mb' }));
 
-  // API Route to simulate receiving and processing an email
+  // CORS for development
+  app.use((req, res, next) => {
+    res.header('Access-Control-Allow-Origin', '*');
+    res.header('Access-Control-Allow-Headers', 'Content-Type');
+    res.header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+    if (req.method === 'OPTIONS') return res.sendStatus(204);
+    next();
+  });
+
+  // Health check
+  app.get('/api/health', (_req, res) => {
+    res.json({ status: 'ok', hasApiKey: !!apiKey });
+  });
+
+  // Process email
   app.post('/api/process-email', async (req, res) => {
     try {
       const { emailContent, tone } = req.body;
-      
-      if (!emailContent) {
-        return res.status(400).json({ error: 'Email content is required' });
+      if (!emailContent || typeof emailContent !== 'string') {
+        return res.status(400).json({ error: 'Email content is required (string)' });
       }
 
-      const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash',
-        contents: emailContent,
-        config: {
-          systemInstruction: getSystemPrompt(tone),
-          responseMimeType: 'application/json',
-          temperature: 0.1,
-        }
+      const data = await callGeminiJson(emailContent, {
+        systemInstruction: getSystemPrompt(tone),
+        responseMimeType: 'application/json',
+        temperature: 0.1,
       });
 
-      const jsonText = response.text;
-      if (!jsonText) {
-        throw new Error('Gemini returned empty response');
-      }
-
-      let parsedData;
-      try {
-        parsedData = JSON.parse(jsonText);
-      } catch (parseError) {
-        console.error("Failed to parse JSON", jsonText);
-        throw new Error('Failed to parse Gemini output as JSON');
-      }
-
-      res.json(parsedData);
+      res.json(data);
     } catch (error: any) {
       console.error('Error processing email:', error);
-      res.status(500).json({ error: 'Failed to process email' });
+      res.status(500).json({ error: error.message || 'Failed to process email' });
     }
   });
 
-  // API Route to generate bulk message using AI
+  // Generate bulk message
   app.post('/api/generate-bulk-message', async (req, res) => {
     try {
       const { leads, customPrompt, companyName, companyProducts, customApiKey, catalogUrl, reviewUrl, tone } = req.body;
-      
-      if (!leads || leads.length === 0) {
-        return res.status(400).json({ error: 'Leads are required' });
+
+      if (!leads || !Array.isArray(leads) || leads.length === 0) {
+        return res.status(400).json({ error: 'Leads array is required' });
       }
 
-      // If user provided a custom key, use it. Otherwise use the env default.
-      const aiClient = customApiKey 
-        ? new GoogleGenAI({ apiKey: customApiKey }) 
-        : ai;
+      const client = customApiKey ? new GoogleGenAI({ apiKey: customApiKey }) : ai;
 
       const promptContext = `
 You are an expert B2B sales assistant.
@@ -122,15 +141,13 @@ Custom Prompt: ${customPrompt || 'Create a general promotional update or check-i
 ${catalogUrl ? `Crucial: Always include our WhatsApp Catalog link in the message and encourage them to view our products: ${catalogUrl}` : ''}
 ${reviewUrl ? `Crucial: If appropriate, politely ask for a review, and if you do, include our Google Business link: ${reviewUrl}` : ''}
 
-Return ONLY the plain text content of the generated message. Do not use markdown blocks like \`\`\`. Use formatting supported by WhatsApp (like *bold* or _italic_). Use placeholders like {{Name}} if you want to make it generic, or write the message in a way that feels personal yet applicable to all.
+Return ONLY the plain text content of the generated message. Do not use markdown blocks. Use formatting supported by WhatsApp (like *bold* or _italic_). Use placeholders like {{Name}} if you want to make it generic, or write the message in a way that feels personal yet applicable to all.
 `;
 
-      const response = await aiClient.models.generateContent({
+      const response = await client.models.generateContent({
         model: 'gemini-2.5-flash',
         contents: promptContext,
-        config: {
-          temperature: 0.7,
-        }
+        config: { temperature: 0.7 },
       });
 
       res.json({ message: response.text?.trim() });
@@ -140,14 +157,19 @@ Return ONLY the plain text content of the generated message. Do not use markdown
     }
   });
 
-  // API Route to generate single review message
+  // Generate review message
   app.post('/api/generate-review-message', async (req, res) => {
     try {
       const { lead, companyName, reviewUrl, customApiKey, tone } = req.body;
-      
-      const aiClient = customApiKey 
-        ? new GoogleGenAI({ apiKey: customApiKey }) 
-        : ai;
+
+      if (!lead?.customerName) {
+        return res.status(400).json({ error: 'Lead with customerName is required' });
+      }
+      if (!reviewUrl) {
+        return res.status(400).json({ error: 'reviewUrl is required' });
+      }
+
+      const client = customApiKey ? new GoogleGenAI({ apiKey: customApiKey }) : ai;
 
       const promptContext = `
 You are an expert customer relations assistant for a B2B company named ${companyName || 'our company'}.
@@ -158,15 +180,13 @@ Keep it warm and professional. At the end of the message, ask them to spare a mo
 Include this EXACT link at the very end of the message: ${reviewUrl}
 Sign off with ${companyName || 'our team'}.
 
-Return ONLY the plain text content of the generated message. Do not use markdown blocks like \`\`\`. Use formatting supported by WhatsApp (like *bold*).
+Return ONLY the plain text content of the generated message. Do not use markdown blocks. Use formatting supported by WhatsApp (like *bold*).
 `;
 
-      const response = await aiClient.models.generateContent({
+      const response = await client.models.generateContent({
         model: 'gemini-2.5-flash',
         contents: promptContext,
-        config: {
-          temperature: 0.5,
-        }
+        config: { temperature: 0.5 },
       });
 
       res.json({ message: response.text?.trim() });
@@ -176,13 +196,13 @@ Return ONLY the plain text content of the generated message. Do not use markdown
     }
   });
 
-  // Expose the prompt so the frontend can read it
+  // Expose prompt
   app.get('/api/prompt', (req, res) => {
-    const tone = req.query.tone as string || 'Professional, B2B, welcoming';
-    res.json({ prompt: getSystemPrompt(tone).trim().replace(/^/gm, '') });
+    const tone = (req.query.tone as string) || 'Professional, B2B, welcoming';
+    res.json({ prompt: getSystemPrompt(tone).trim() });
   });
 
-  // Vite middleware for development
+  // Vite middleware or static serving
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -192,13 +212,14 @@ Return ONLY the plain text content of the generated message. Do not use markdown
   } else {
     const distPath = path.join(process.cwd(), 'dist');
     app.use(express.static(distPath));
-    app.get('*', (req, res) => {
+    app.get('*', (_req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+    console.log(`🚀 Server running on http://localhost:${PORT}`);
+    console.log(`   API Key: ${apiKey ? '✅ configured' : '❌ missing'}`);
   });
 }
 
