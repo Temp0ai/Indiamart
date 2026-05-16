@@ -20,6 +20,8 @@ interface SettingsTabProps {
   setGmailLinked: (v: boolean) => void;
   gmailAccount: string;
   setGmailAccount: (v: string) => void;
+  onGmailConnect?: () => void;
+  onGmailDisconnect?: () => void;
 }
 
 export function SettingsTab({
@@ -28,10 +30,10 @@ export function SettingsTab({
   geminiApiKey, setGeminiApiKey,
   whatsappLinked, setWhatsappLinked, waPhoneInput, setWaPhoneInput,
   gmailLinked, setGmailLinked, gmailAccount, setGmailAccount,
+  onGmailConnect, onGmailDisconnect,
 }: SettingsTabProps) {
   const [otpSent, setOtpSent] = useState(false);
   const [waOtpInput, setWaOtpInput] = useState('');
-  const [isLinkingGmail, setIsLinkingGmail] = useState(false);
 
   return (
     <div className="bg-white border border-slate-200 rounded-xl p-6 md:p-12 max-w-2xl shadow-sm">
@@ -157,39 +159,43 @@ export function SettingsTab({
               <CheckCircle2 className="h-5 w-5 text-red-500" />
               <span className="text-sm font-semibold truncate">Synced: {gmailAccount}</span>
             </div>
-            <button onClick={() => { setGmailLinked(false); setGmailAccount(''); }} className="text-xs font-semibold hover:underline text-slate-600">
+            <button
+              onClick={async () => {
+                try {
+                  await fetch('/api/gmail/disconnect', { method: 'POST' });
+                } catch {}
+                setGmailLinked(false);
+                setGmailAccount('');
+                if (onGmailDisconnect) onGmailDisconnect();
+              }}
+              className="text-xs font-semibold hover:underline text-slate-600"
+            >
               Disconnect
-            </button>
-          </div>
-        ) : isLinkingGmail ? (
-          <div className="flex flex-col gap-4">
-            <p className="text-xs text-slate-600">Enter your Gmail address to simulate Google OAuth connection.</p>
-            <div className="flex flex-col md:flex-row gap-2">
-              <input
-                type="email"
-                placeholder="e.g. yourbusiness@gmail.com"
-                className="flex-1 border border-slate-200 rounded-xl px-4 py-2 text-sm focus:ring-2 focus:ring-red-500 outline-none"
-                value={gmailAccount}
-                onChange={(e) => setGmailAccount(e.target.value)}
-              />
-              <button
-                onClick={() => { if (gmailAccount.includes('@')) { setGmailLinked(true); setIsLinkingGmail(false); } }}
-                className="bg-red-500 text-white rounded-xl px-6 py-2 font-semibold text-xs hover:bg-red-600 min-h-[44px]"
-              >
-                Connect Gmail
-              </button>
-            </div>
-            <button onClick={() => setIsLinkingGmail(false)} className="text-xs font-semibold hover:underline text-left text-slate-600">
-              &larr; Cancel
             </button>
           </div>
         ) : (
           <div className="flex flex-col gap-4">
-            <p className="text-xs text-slate-600">Connect your Gmail account to continuously scan for new inquiries and add them to the queue automatically.</p>
+            <p className="text-xs text-slate-600">
+              Connect your Gmail account via Google OAuth to automatically scan for Indiamart inquiry emails.
+            </p>
             <button
-              onClick={() => setIsLinkingGmail(true)}
-              className="bg-slate-900 text-white rounded-xl py-3 px-6 font-semibold text-xs hover:bg-slate-800 md:self-start"
+              onClick={async () => {
+                try {
+                  const res = await fetch('/api/gmail/auth-url');
+                  const data = await res.json();
+                  if (data.error) {
+                    alert(data.error);
+                    return;
+                  }
+                  // Open Google OAuth in same window
+                  window.location.href = data.url;
+                } catch (err: any) {
+                  alert('Failed to start Gmail OAuth: ' + err.message);
+                }
+              }}
+              className="bg-slate-900 text-white rounded-xl py-3 px-6 font-semibold text-xs hover:bg-slate-800 md:self-start flex items-center gap-2"
             >
+              <Mail className="h-4 w-4" />
               Connect Gmail Account
             </button>
           </div>

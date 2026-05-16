@@ -32,12 +32,14 @@ interface InboxTabProps {
   onNavigateToSettings: () => void;
   onSelectInquiry: (inquiry: Inquiry) => void;
   setActiveTab: (tab: 'leads') => void;
+  syncEmails?: () => Promise<void>;
 }
 
 export function InboxTab({
   gmailLinked, gmailAccount, syncFolder, setSyncFolder,
   isSyncingGmail, lastSyncResult, onSync, onProcessEmail,
   isProcessing, inquiries, onNavigateToSettings, onSelectInquiry, setActiveTab,
+  syncEmails,
 }: InboxTabProps) {
   const reminders = inquiries.filter(i => i.reminderDate && i.status !== 'contacted');
 
@@ -135,13 +137,15 @@ export function InboxTab({
         </div>
       )}
 
-      {/* Sample Email */}
+      {/* Sample Email / Real Sync Info */}
       <div className="p-4 md:p-8 border-b border-slate-200">
-        <h3 className="text-xs font-semibold tracking-wide text-slate-500 mb-4 md:mb-6">Simulate Incoming Payload</h3>
+        <h3 className="text-xs font-semibold tracking-wide text-slate-500 mb-4 md:mb-6">
+          {gmailLinked ? 'Gmail Connected — Click "Sync Gmail Now" to fetch real emails' : 'Sample Email (Demo Mode)'}
+        </h3>
         <div className="bg-slate-50 p-4 md:p-6 border border-slate-200 rounded-lg font-mono text-xs md:text-sm text-slate-900 whitespace-pre-wrap leading-relaxed overflow-x-auto relative">
           {!gmailLinked && (
             <div className="absolute inset-0 bg-white/80 backdrop-blur-sm flex items-center justify-center border-2 border-dashed border-slate-200 m-2">
-              <span className="font-semibold bg-white px-4 py-2 border border-slate-200 rounded-xl">Account Not Linked</span>
+              <span className="font-semibold bg-white px-4 py-2 border border-slate-200 rounded-xl">Connect Gmail in Settings</span>
             </div>
           )}
           {SAMPLE_EMAIL}

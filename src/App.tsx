@@ -60,6 +60,25 @@ export default function App() {
   const isWaLinked = whatsappLinked === 'true';
   const isGmailLinked = gmailLinked === 'true';
 
+  // --- Check for Gmail OAuth redirect ---
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('gmail') === 'connected') {
+      // Fetch Gmail status from backend
+      fetch('/api/gmail/status')
+        .then((r) => r.json())
+        .then((data) => {
+          if (data.connected) {
+            setGmailLinked('true');
+            setGmailAccount(data.email);
+          }
+        })
+        .catch(() => {});
+      // Clean URL
+      window.history.replaceState({}, '', '/');
+    }
+  }, []);
+
   const uniqueCategories = useMemo(
     () => Array.from(new Set(inquiries.map((i) => i.category).filter(Boolean))),
     [inquiries]
@@ -146,14 +165,73 @@ Indiamart`;
     }
   }, [customTone, setInquiries]);
 
-  const handleSyncGmail = useCallback(() => {
+  const handleSyncGmail = useCallback(async () => {
+    if (!isGmailLinked) {
+      alert('Please connect Gmail in Settings first.');
+      setActiveTab('settings');
+      return;
+    }
     setIsSyncingGmail(true);
-    setTimeout(() => {
+    try {
+      // Real Gmail sync
+      const res = await fetch('/api/gmail/sync', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: 'from:indiamart.com newer_than:7d' }),
+      });
+      const data = await res.json();
+
+      if (!res.ok) {
+        if (res.status === 401) {
+          setGmailLinked('false');
+          setGmailAccount('');
+          alert('Gmail token expired. Please reconnect in Settings.');
+          setActiveTab('settings');
+          return;
+        }
+        throw new Error(data.error);
+      }
+
+      const emailCount = data.emails?.length || 0;
+      setLastSyncResult({ count: emailCount, time: new Date().toLocaleTimeString() });
+
+      // Process each email with AI
+      if (emailCount > 0) {
+        let processed = 0;
+        for (const email of data.emails) {
+          try {
+            const procRes = await fetch('/api/process-email', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ emailContent: email.body || email.snippet, tone: customTone }),
+            });
+            const procData = await procRes.json();
+            if (procRes.ok && procData.customerName) {
+              const category = categorizeByKeywords(procData.requirements || '');
+              const newInquiry: Inquiry = {
+                id: Math.random().toString(36).substring(7),
+                ...procData,
+                category: category !== 'Other' ? category : (procData.category || 'Other'),
+                status: 'new',
+                receivedAt: new Date().toLocaleTimeString(),
+              };
+              setInquiries((prev) => [newInquiry, ...prev]);
+              processed++;
+            }
+          } catch (procErr) {
+            console.error('Failed to process email:', procErr);
+          }
+        }
+        setLastSyncResult({ count: processed, time: new Date().toLocaleTimeString() });
+        if (processed > 0) setActiveTab('leads');
+      }
+    } catch (err: any) {
+      console.error('Gmail sync error:', err);
+      alert('Sync failed: ' + err.message);
+    } finally {
       setIsSyncingGmail(false);
-      setLastSyncResult({ count: Math.floor(Math.random() * 3) + 1, time: new Date().toLocaleTimeString() });
-      handleProcessEmail();
-    }, 2500);
-  }, [handleProcessEmail]);
+    }
+  }, [isGmailLinked, customTone, setInquiries, setGmailLinked, setGmailAccount]);
 
   // --- CSV Export ---
   const handleExportCSV = useCallback(() => {
@@ -470,6 +548,7 @@ Indiamart`;
               waPhoneInput={waPhoneInput} setWaPhoneInput={setWaPhoneInput}
               gmailLinked={isGmailLinked} setGmailLinked={(v) => setGmailLinked(String(v))}
               gmailAccount={gmailAccount} setGmailAccount={setGmailAccount}
+              onGmailDisconnect={() => { setGmailLinked('false'); setGmailAccount(''); }}
             />
           )}
         </div>
